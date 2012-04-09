@@ -1,6 +1,418 @@
-TesT is a text editor written in DCPU-16 assembly.
+;
+; Text editing software "TesT"
+; Version 0.1
+; by thatfreakingguy
+;
+; Register usage:
+; I    - The cusor position in the text
+; X, Y - The cursor position on screen
+; Z    - The scrolling offset
 
-To assemble it needs embedded data, screen output and keyboard input.
-Only tested it with DPCU-Studio, because it supports all that.
-To make it work with other compilers/emulators you may need to change :putc, :getc and :highlight accordingly (all at the bottom).
-To start with a blank document uncomment the very last comment line.
+jsr clear_screen ; Just in case
+
+; Init
+set i, 0
+set x, 0
+set y, 0
+set z, 0
+
+:test_loop
+
+    set b, y    ; Calculate the screen position
+    mul b, 32
+    add b, x
+    xor [0x8000+b], [highlight] ; Highlight
+
+    set push, b; Remember last highlight
+
+    ;jsr clear_screen
+    set a, z
+    set b, i
+    jsr draw_screen
+
+    jsr getc ; Input handling
+
+    ife a, 1 ; Left
+        jsr left
+    ife a, 2 ; Right
+        jsr right
+    ife a, 3 ; Up
+        jsr up
+    ife a, 4 ; Down
+        jsr down
+    ifg a, 4 ; Letter or stuff like that
+        jsr write
+
+    jsr calc_pos
+    jsr adjust
+
+    set j, pop ; Load last highlight
+    set c, [0x8000+j] ; Prepare to check if it's still there
+    and c, [highlight]
+    ifn c, 0
+        xor [0x8000+j], [highlight]  ; Disable old Hicglight
+
+    set pc, test_loop
+:test_loop_end
+
+:freeze
+set pc, freeze ; Freeze forever (Shouldn't be reached. Ever.)
+
+; ==============================================================================
+; Not in the main part so I can claim it's not all cramped together.
+; Most of this doesn't follow the ABI.
+; ==============================================================================
+
+:write ; Writes the letter in a
+
+    ife a, 8 ; Backspace
+        set pc, write_backspace
+    ife a, 27 ; Delete doesn't actually get registered. Escape deletes for now.
+        set pc, write_delete
+    ife a, 9 ; Tab
+        set pc, write_tab
+    set pc, write_letter
+
+    :write_backspace
+    sub i, 1
+    ife i, 0xffff ; Underflow, abort!
+        set pc, write_end
+    :write_delete
+    set b, RAM
+    set c, i
+    jsr str_delete
+    set pc, pop ; return
+
+    :write_tab
+    set a, 32 ; Space
+    set j, x
+    :write_tab_loop
+        jsr write ; Fill up with spaces until next 4 letter-pair-whatever
+        add j, 1
+        mod j, 4 ; Tab length 4
+        ifn j, 0
+            set pc, write_tab_loop
+
+    set pc, pop ; return
+
+    :write_letter
+    set b, RAM
+    set c, i
+
+    jsr str_insert
+
+    :write_end
+
+    add i, 1
+
+    set pc, pop ; return
+
+:left ; Move the cursor left
+    ife i, 0 ; Beginning of text
+        set pc, pop ; return
+
+    sub i, 1
+
+    set pc, pop ; return
+
+:right ; Move the cursor right
+    ife [RAM+i], 0 ; End of text
+        set pc, pop ; return
+
+    add i, 1
+
+    set pc, pop ; return
+
+:down ; Move the cursor down
+    :down_loop
+        ife [RAM+i], 0xA ; newline
+            set pc, down_loop_end
+        ife [RAM+i], 0 ; End of string
+            set pc, down_loop_end
+        add i, 1
+
+        set pc, down_loop
+    :down_loop_end
+
+    jsr right
+
+    set pc, pop ; return
+
+:up ; Move the cursor up
+    jsr left
+    jsr left
+    :up_loop
+        ife [RAM+i], 0xA ; newline
+            set pc, up_loop_end
+        ife i, 0 ; Beginning of string
+            set pc, up_loop_end
+        sub i, 1
+
+        set pc, up_loop
+    :up_loop_end
+
+    ifn i, 0
+        jsr right
+
+    set pc, pop ; return
+
+:calc_pos ; Calculates the screen position for I into X and Y
+    set j, 0 ; Iterator
+    set x, 0
+    set y, 0
+
+    :calc_pos_loop
+        ife j, i
+            set pc, calc_pos_loop_end
+
+        add x, 1
+
+        ife [RAM+j], 0xA ; Newline
+            add y, 1
+        ife [RAM+j], 0xA ; Newline
+            set x, 0
+
+        ife x, 32 ; Reached end of line
+            add y, 1
+        ife x, 32 ; Reached end of line
+            set x, 0
+
+        add j, 1
+        set pc, calc_pos_loop
+    :calc_pos_loop_end
+
+    set pc, pop ; return
+
+:adjust ; Adjusts the scrolling and the line according to the scrolling
+    ; Calculate the difference between y and z
+    set a, y
+    sub a, z
+
+    ifg a, 15
+        set pc, adjust_adjust
+    set pc, adjust_end
+
+    :adjust_adjust
+    ; Cursor is out of screen
+    ifg z, y
+        set pc, adjust_lower
+    ifg y, z
+        set pc, adjust_rise
+
+    sub pc, 1 ; Something went terribly wrong
+
+    :adjust_lower
+    sub z, 1
+    set pc, adjust ; loop
+
+    :adjust_rise
+    add z, 1
+    set pc, adjust ; loop
+
+    :adjust_end
+
+    sub y, z
+
+    set pc, pop ; return
+
+
+; ==============================================================================
+; Subroutines
+; ==============================================================================
+
+; Sets the entire screen to 0
+:clear_screen
+    set a, 0x8000 ; Start of screen
+    :clear_screen_loop
+        ife a, 0x8200 ; End of screen
+            set pc, pop ; return
+        set [a], 0 ; Clear
+        add a, 1 ; Advance
+        set pc, clear_screen_loop ; Loop
+
+; Clears line C
+:clear_line
+    set b, 0
+    set a, 0
+    :clear_line_loop
+        jsr putc
+        add b, 1
+        ifn b, 32
+            set pc, clear_line_loop
+
+    set pc, pop
+
+; Helper for draw_screen
+; Clears line Y after character X
+:clear_rest
+    set push, c ; Preserve Registers
+    set push, a
+    set a, 0
+    set b, x
+    set c, y
+
+    :clear_rest_loop
+        jsr putc
+        add b, 1
+        ife b, 32
+            set pc, clear_rest_loop_end
+        set pc, clear_rest_loop
+    :clear_rest_loop_end
+
+    set a, pop
+    set c, pop ; Restore Registers
+    set pc, pop ; return
+
+; Draws the text to the screen with the line offset A.
+:draw_screen
+    set push, i ; Preserve registers
+    set push, j
+    set push, x
+    set push, y
+    set push, z
+
+    set i, 0 ; The string iterator
+    set x, 0 ; Character counter
+    set y, 0 ; Line counter
+
+    :draw_screen_loop
+        set c, [RAM+i] ; The current character
+        ife c, 0 ; End of text
+            set pc, draw_screen_loop_end
+
+        ifn c, 0xA ; Newline
+            set pc, draw_screen_letter
+
+            ; Only clear the line when it's not scrolled away
+            set push, y
+            sub y, a
+            ifg 18, y
+                jsr clear_rest
+            set y, pop
+
+            add y, 1
+            set x, 0xFFFF ; Pseudo -1
+            set pc, draw_screen_nodraw ; No need to draw the newline
+
+        :draw_screen_letter
+        bor c, 0x7000
+
+        set z, y ; The line on the screen
+        sub z, a
+        ifg z, 17 ; Range check
+            set pc, draw_screen_nodraw
+        ; else
+            set push, a ; Preserve A and B
+            set push, b
+            set a, c
+            set b, x
+            set c, z
+            jsr putc
+            set b, pop ; Restore A and B
+            set a, pop
+        :draw_screen_nodraw
+
+        add i, 1 ; Advance
+        add x, 1
+
+        ife x, 32 ; End of visible line reached
+            add y, 1
+        ife x, 32
+            set x, 0x0
+
+        set pc, draw_screen_loop
+    :draw_screen_loop_end
+
+    sub y, a
+    jsr clear_rest
+
+    add y, 1
+    set c, y
+    jsr clear_line
+
+    set z, pop ; Restore registers
+    set y, pop
+    set x, pop
+    set j, pop
+    set i, pop
+    set pc, pop ; Return
+
+
+; ==============================================================================
+; General subroutines
+; ==============================================================================
+
+; Inserts the letter in A into string B at offset C
+:str_insert
+    set push, i ; Preserve register
+    set push, x
+    set push, y
+
+    set i, b
+    add i, c ; Go to the insert position
+    set x, [i]
+    set [i], a
+    :str_insert_loop
+        set y, x
+        set x, [1+i] ; Next character
+        set [1+i], y ; Overwrite the next character
+        ife [i], 0
+            set pc, str_insert_loop_end
+        add i, 1 ; Advance
+        set pc, str_insert_loop
+    :str_insert_loop_end
+
+    set y, pop ; Restore register
+    set x, pop
+    set i, pop
+    set pc, pop ; return
+
+; Deletes the character in string B at offset C
+:str_delete
+    set push, i ; Preserve register
+
+    set i, b
+    add i, c ; Go to the insert position
+    :str_delete_loop
+        ife [i], 0
+            set pc, str_delete_loop_end
+        set [i], [1+i] ; Overwrite this character
+        add i, 1 ; Advance
+        set pc, str_delete_loop
+    :str_delete_loop_end
+
+    set i, pop ; Restore register
+    set pc, pop ; return
+
+; Places the character stored in A to the position (B, C) on the screen.
+:putc
+    set push, x ; Preserve X
+    set x, c    ; Calculate the screen position
+    mul x, 32
+    add x, b
+    and [0x8000+x], 0xff80 ; Delete the character while keeping the formatting
+    bor [0x8000+x], a ; Set the screen to A
+    set x, pop ; Restore X
+    set pc, pop ; return
+
+; Returns the currently pressed key or waits until the next keypress
+:getc
+    ife [0x9000], 0
+        set pc, getc
+    set a, [0x9000]
+    set [0x9000], 0
+    set [0xAAAA], a
+    set pc, pop
+
+:highlight dat 0x0600
+
+:RAM
+; Uncomment to have no starting text.
+;dat 0
+dat "Welcome to TesT ver. 0.2!\n\n"
+dat "This is a little test to see how easy it is to implement a text editor.\n"
+dat "Of course it's just a gimmick right now since you can't save your text.\n"
+dat "\nHave fun!\n"
+dat "\n\nAnd here is something to scroll through:\n"
+dat "TesT0.\nTesT1.\nTesT2.\nTesT3.\nTesT4.\nTesT5.\nTesT6.\nTesT7.\n"
+dat "TesT8.\nTesT9.\nTesTa.\nTesTb.\nTesTc.\nTesTd.\nTesTe.\nTesTf.\n", 0
