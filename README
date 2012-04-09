@@ -1,0 +1,6 @@
+TesT is a text editor written in DCPU-16 assembly.
+
+To assemble it needs embedded data, screen output and keyboard input.
+Only tested it with DPCU-Studio, because it supports all that.
+To make it work with other compilers/emulators you may need to change :putc, :getc and :highlight accordingly (all at the bottom).
+To start with a blank document uncomment the very last comment line.
